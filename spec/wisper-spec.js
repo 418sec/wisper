@@ -67,7 +67,8 @@ describe('local pub/sub', function() {
         return null;
     });
     it('honors regex .* subscriptions', function(done) {
-        service.subscribe('.*', function(error) {
+        var regex = '.*';
+        service.subscribe(regex, function(error) {
             expect(error).toBeFalsy();
             return null;
         });
@@ -75,6 +76,7 @@ describe('local pub/sub', function() {
             expect(publication).toBeTruthy();
             expect(publication.channel).toEqual('foo');
             expect(publication.message).toEqual('bar');
+            expect(publication.subscriptions).toEqual([regex]);
             done();
             return null;
         });
@@ -88,7 +90,8 @@ describe('local pub/sub', function() {
         return null;
     });
     it('honors regex ? subscriptions', function(done) {
-        service.subscribe('f(?:oo)?', function(error) {
+        var regex = 'f(?:oo)?';
+        service.subscribe(regex, function(error) {
             expect(error).toBeFalsy();
             return null;
         });
@@ -96,6 +99,7 @@ describe('local pub/sub', function() {
             expect(publication).toBeTruthy();
             expect(publication.channel).toEqual('foo');
             expect(publication.message).toEqual('bar');
+            expect(publication.subscriptions).toEqual([regex]);
             done();
             return null;
         });

@@ -30,10 +30,12 @@ function Service() {
     self.publish = function publish(kwargs, callback) {
         var channel = kwargs.channel;
         var message = kwargs.message;
-        if (_.some(subscriptions, function(subscription) {
+        var matching_subs = _.filter(subscriptions, function(subscription) {
             return channel.match(subscription);
-        })) {
+        });
+        if (matching_subs.length) {
             self.emit('publication', {
+                'subscriptions': matching_subs,
                 'channel': channel,
                 'message': message
             });

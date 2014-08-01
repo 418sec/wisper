@@ -1,10 +1,10 @@
 {
   "name": "wisper",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "minimalist websocket pub/sub with regex subscriptions",
   "main": "wisper.js",
   "scripts": {
-    "test": "./node_modules/.bin/jasmine-node ./spec"
+    "test": "./node_modules/.bin/jasmine-node --captureExceptions ./spec"
   },
   "repository": {
     "type": "git",

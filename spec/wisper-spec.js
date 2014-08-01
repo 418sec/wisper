@@ -66,4 +66,46 @@ describe('local pub/sub', function() {
         });
         return null;
     });
+    it('honors regex .* subscriptions', function(done) {
+        service.subscribe('.*', function(error) {
+            expect(error).toBeFalsy();
+            return null;
+        });
+        service.on('publication', function(publication) {
+            expect(publication).toBeTruthy();
+            expect(publication.channel).toEqual('foo');
+            expect(publication.message).toEqual('bar');
+            done();
+            return null;
+        });
+        service.publish({
+            'channel': 'foo',
+            'message': 'bar'
+        }, function(error) {
+            expect(error).toBeFalsy();
+            return null;
+        });
+        return null;
+    });
+    it('honors regex ? subscriptions', function(done) {
+        service.subscribe('f(?:oo)?', function(error) {
+            expect(error).toBeFalsy();
+            return null;
+        });
+        service.on('publication', function(publication) {
+            expect(publication).toBeTruthy();
+            expect(publication.channel).toEqual('foo');
+            expect(publication.message).toEqual('bar');
+            done();
+            return null;
+        });
+        service.publish({
+            'channel': 'foo',
+            'message': 'bar'
+        }, function(error) {
+            expect(error).toBeFalsy();
+            return null;
+        });
+        return null;
+    });
 });

@@ -30,7 +30,9 @@ function Service() {
     self.publish = function publish(kwargs, callback) {
         var channel = kwargs.channel;
         var message = kwargs.message;
-        if (_.contains(subscriptions, channel)) {
+        if (_.some(subscriptions, function(subscription) {
+            return channel.match(subscription);
+        })) {
             self.emit('publication', {
                 'channel': channel,
                 'message': message

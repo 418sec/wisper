@@ -1,6 +1,6 @@
 {
   "name": "wisper",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "minimalist websocket pub/sub with regex subscriptions",
   "main": "wisper.js",
   "scripts": {
@@ -24,6 +24,7 @@
   "homepage": "https://github.com/toejough/wisper",
   "dependencies": {
     "jasmine-node": "^1.14.5",
+    "underscore": "^1.6.0",
     "ws": "^0.4.31"
   }
 }

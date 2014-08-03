@@ -9,7 +9,9 @@ minimalist websocket pub/sub with regex subscriptions
 
 **ANOTHER WARNING**:  It should be clear from the version, but this project is not stable.  At the moment, I make no guarantees about API or features.  I know what I intend, but a lot can happen in early development.
 
-please don’t actually try to use this yet.  wait for version 1.0.  this is very much proof of concept and likely to be quite buggy.  It is purposely NOT available on NPM yet.
+**FINAL WARNING**:  please don’t actually try to use this yet.  wait for version 1.0.  this is very much proof of concept and likely to be quite buggy.  API's are likely to switch out from underneath you.  Documentation will probably suck.
+
+**JUST ENOUGH ROPE**:  If you want to mess with this anyway, having read all the above, `npm install wisper` will do the trick.  `npm test wisper` will run the automated tests.  If you find problems or missing features, feel free to submit issues and pull requests.
 
 ---
 

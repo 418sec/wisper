@@ -125,7 +125,8 @@ describe('server', function() {
     var server;
     // setup/teardown
     beforeEach(function(done) {
-        server = wisper.create_server(8889, function(error) {
+        server = wisper.create_server();
+        server.listen(8889, function(error) {
             expect(error).toBeFalsy();
             done();
         });
@@ -145,7 +146,8 @@ describe('client', function() {
     var client;
     // setup/teardown
     beforeEach(function(done) {
-        server = wisper.create_server(8889, function(error) {
+        server = wisper.create_server();
+        server.listen(8889, function(error) {
             expect(error).toBeFalsy();
             client = wisper.create_client(8889, '127.0.0.1');
             client.on('open', function() {
@@ -170,7 +172,8 @@ describe('remote pub/sub', function() {
     var client_2;
     // setup/teardown
     beforeEach(function(done) {
-        server = wisper.create_server(8889, function(error) {
+        server = wisper.create_server();
+        server.listen(8889, function(error) {
             expect(error).toBeFalsy();
             client_1 = wisper.create_client(8889, '127.0.0.1');
             client_1.on('open', function() {

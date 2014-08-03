@@ -12,6 +12,7 @@
 // [ -Node- ]
 var events = require('events');
 var util = require('util');
+var http = require('http');
 // [ -Third Party- ]
 var _ = require('underscore');
 var ws = require('ws');
@@ -62,12 +63,13 @@ function create_service() {
 
 
 // [ Server ]
-function Server(port, callback) {
+function Server() {
     // [ -Private Vars- ]
     // self is always the service instance
     var self = this;
     var WSServer = ws.Server;
-    var ws_server = new WSServer({'port': port}, callback);
+    var http_server = http.createServer();
+    var ws_server = new WSServer({'server': http_server});
     var services = [];
     var conns = [];
 
@@ -112,17 +114,20 @@ function Server(port, callback) {
         });
     });
 
-    // [ -Public- ]
+    // [ -Public, accesses Private- ]
+    // listen on port
+    self.listen = http_server.listen.bind(http_server);
+    // close the server
     self.close = function close(callback) {
-        // don't close - it causes a race and a leaked timeout in the server.
+        // don't close client connections - it causes a race and a leaked timeout in the server.
         // see issue at https://github.com/einaros/ws/issues/343
         ws_server.close();
-        callback(null);
+        http_server.close(callback);
     };
 }
 // define an explicit creator function
-function create_server(port, callback) {
-    return new Server(port, callback);
+function create_server() {
+    return new Server();
 }
 
 

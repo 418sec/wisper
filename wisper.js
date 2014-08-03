@@ -88,13 +88,17 @@ function Server(port, callback) {
             // subscribe to this service only.
             if (json_message.type == 'subscribe') {
                 conn.service.subscribe(json_message.body.channel, function(error) {
-                    console.error(error);
+                    if (error) {
+                        console.error(error);
+                    }
                 });
             // publish to all services
             } else if (json_message.type == 'publish') {
                 _.each(services, function(service) {
                     service.publish(json_message.body, function(error) {
-                        console.error(error);
+                        if (error) {
+                            console.error(error);
+                        }
                     });
                 });
             }
@@ -110,10 +114,8 @@ function Server(port, callback) {
 
     // [ -Public- ]
     self.close = function close(callback) {
-        _.each(conns, function(conn) {
-            conn.close();
-            conn.terminate();
-        });
+        // don't close - it causes a race and a leaked timeout in the server.
+        // see issue at https://github.com/einaros/ws/issues/343
         ws_server.close();
         callback(null);
     };

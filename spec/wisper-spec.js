@@ -9,6 +9,9 @@
 /* global beforeEach */
 /* global afterEach */
 /* global expect */
+/* global console */
+/* global xit */
+/* global xdescribe */
 
 
 // [ Requires ]
@@ -115,6 +118,49 @@ describe('local pub/sub', function() {
             return null;
         });
         return null;
+    });
+});
+describe('server', function() {
+    // vars
+    var server;
+    // setup/teardown
+    beforeEach(function(done) {
+        server = wisper.create_server(8889, function(error) {
+            expect(error).toBeFalsy();
+            done();
+        });
+        return null;
+    });
+    afterEach(function(done) {
+        server.close(done);
+    });
+    // tests
+    it('closes down', function(done) {
+        done();
+    });
+});
+describe('client', function() {
+    // vars
+    var server;
+    var client;
+    // setup/teardown
+    beforeEach(function(done) {
+        server = wisper.create_server(8889, function(error) {
+            expect(error).toBeFalsy();
+            client = wisper.create_client(8889, '127.0.0.1');
+            client.on('open', function() {
+                done();
+            });
+        });
+        return null;
+    });
+    afterEach(function(done) {
+        client.close();
+        server.close(done);
+    });
+    // tests
+    it('closes down', function(done) {
+        done();
     });
 });
 describe('remote pub/sub', function() {

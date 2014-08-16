@@ -24,38 +24,71 @@ Wisper is, as the subtitle above says, a minimalist websocket pub/sub with regex
 * *Pub/Sub* -  Publish/subscribe
 * *Regex subscriptions* -  Subscribe to channels via regex!
 
+There are three main entities in the core of `wisper`:
+
+1. The `service`, which manages subscriptions and distributes published messages to the appropriate subscribers. All local interactions are with a `service`, which handles any and all websocket communication with remote peer `service`s.
+2. The `subscriber`, which subscribes to channels on both local and remote `service`s.
+3. The `publisher`, which publishes to both local and remote `service`s .
+
+
 How do you use it?
 ---
-As a local, in-app service:
+The general flow of events for a simple use case goes like this:
 
-```javascript
+1. A `subscriber` prepares to receive messages.
+2. The `subscriber` then subscribes to a channel on a `service`.
+3. A `publisher` asks the `service` to publish a message on a channel.
+4. The `service` determines which subscribers to send the message to and does so.
+5. The `subscriber` receives the message and does something with it.
+
+In code, that's:
+
+```
+// Get wisper
 var wisper = require('wisper');
+
+// Get service and subscriber
 var service = wisper.create_service();
+var subscriber = wisper.create_subscriber();
+var publisher = wisper.create_publisher();
 
-// Subscribe to a channel and listen to it
-service.subscribe('foo', function(error) {
-  if(error) {
-    console.error(error);
-  }
-});
-service.on('publication', function(publication) {
-  console.log(publication.subscriptions);
-  console.log(publication.channel);
-  console.log(publication.message);
+// Prepare to receive messages
+subscriber.on('message', function respond_to(message, published_channels, subscribed_channels, service) {
+	console.log(message);  // The published message.
+	console.log(published_channels);
+	// The channels published on.
+	// If a message is published on multiple channels, and the subscriber is subscribed to 
+	// more than one of them, the subscriber only receives the message once, and is given
+	// a list of subscribed channels on which the message was published.
+	console.log(subscribed_channels);
+	// The channels subscribed to.
+	// If a message is published on a channel, and the subscriber is subscribed to multiple
+	// regex channels which match the published channel, the subscriber only receives the
+	// message once, and is given a list of subscribed channels which match the channel
+	// on which the message was published.
+	console.log(service.name);
+	// The service subscribed to.
+	// Subscribers are free to subscribe to as many services as are available.  This
+	// argument allows to you recognize which service sent the message.
 });
 
-// Publish to a channel
-service.publish({
-  'channel': 'foo',
-  'message': 'The FooBar is now open!');
-}, function(error) {
-  if(error) {
-    console.error(error);
-  }
-);
+// Subscribe
+subscriber.subscribe(service, 'b.*', callback(error) {
+	console.error(error);
+});
+
+// Publish
+publisher.publish(service, 'bar', 'a message', callback(error) {
+	console.error(error);
+});
+//`respond_to` is now called with 'a message', ['bar'], and ['b.*']
+
 ```
 
-As a client/server... coming soon...
+`publisher` and `subscriber` objects can publish and subscribe either to local or remote services.  For remote services, instead of passing a service object, pass the URL and port which the remote service is listening on.
+
+To configure the `service` to accept subscriptions or publications from remote users, use `service.listen`.
+
 
 Why...
 ---
@@ -68,7 +101,7 @@ Feel free to let me know if there's a similar or better solution that meets the 
 I like the idea of doing one thing and doing it well.  Practically, it means that your overall project is easier to wrap your head around, which makes it easier to reason about, to debug, to extend, and to use.  
 
 ###...do you care that it uses websockets as opposed to any other protocol?
-Websockets allow fast two-way communication on the web, without the complexity of raw TCP.  No need for a client to have their own server running to receive notifications.  No need for all of the latency and overhead of long-polling, or the overhead of SPDY pushes.
+Websockets allow fast two-way communication on the web, without the complexity of raw TCP.  No need for a subscriber to have their own server running to receive notifications.  No need for all of the latency and overhead of long-polling, or the overhead of SPDY pushes.
 ###...do you want pub/sub?
 Pub/sub allows me to eliminate polling and reduce communication overhead in my network-distributed application.
 ###...do you care about regex subscriptions?
@@ -77,10 +110,10 @@ Flexibility and simplicity for users.  Imagine a scenario in which you are build
 I typed the important bits out in different orders and eventually saw:
 
 Minimal 
-**W**eb
-**S**ocket
-**S**ubscribe
-**P**ublish
-**R**egex
+**W** eb
+**S** ocket
+**S** ubscribe
+**P** ublish
+**R** egex
 
 See the WSSPR?  "Minimal" doesn't make it into the naming explicitly, but a 'wisp' and a 'whisper' are both small (one in mass, the other in amplitude), so I felt like it fit quite nicely.

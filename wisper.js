@@ -7,6 +7,7 @@
 /* global require */
 /* global exports */
 /* global console */
+/* global process */
 
 
 // [ Requires ]
@@ -269,7 +270,11 @@ function Client(service) {
         });
         // receive a message and the channels it was broadcast on.
         // emit the expected signature.
-        self.emit('message', message, channels, subscription);
+        process.nextTick(function() {
+            self.emit('message', message, channels, subscription);
+            return null;
+        });
+        return null;
     };
     self.unsubscribe = function unsubscribe(old_regexes, callback) {
         debugtrace(old_regexes);
@@ -335,6 +340,7 @@ function Server(service) {
                     console.error(error);
                 }
             });
+            return null;
         });
         // listen to messages
         conn.on('app_message', function(message, callback) {
@@ -367,12 +373,15 @@ function Server(service) {
                     callback(error);
                 });
             }
+            return null;
         });
         // remove service when this conn closes
         conn.on('close', function() {
             tracetrace();
             conn.ps_client.unsubscribe();
+            return null;
         });
+        return null;
     });
 
     // [ -Public, accesses Private- ]
@@ -457,20 +466,29 @@ function create_app_send_for(transport) {
         } else if (parsed.message_id) {
             if (parsed.message_id === 0) {
                 // No response requested, and no listener on other end
-                transport.emit('app_message', parsed.message, function(error, response, callback) {
+                process.nextTick(function() {
                     tracetrace();
-                    callback(null, "Warning: no callback was registered by the remote peer." +
-                             "  The peer will not be informed of the error or result.");
+                    transport.emit('app_message', parsed.message, function(error, response, callback) {
+                        tracetrace();
+                        callback(null, "Warning: no callback was registered by the remote peer." +
+                                 "  The peer will not be informed of the error or result.");
+                        return null;
+                    });
+                    return null;
                 });
             } else {
                 // Client wants a response
-                transport.emit('app_message', parsed.message, function(error, response, callback) {
-                    tracetrace();
-                    transport.send(JSON.stringify({
-                        'response_id': parsed.message_id,
-                        'error': error,
-                        'response': response
-                    }), callback);
+                process.nextTick(function() {
+                    transport.emit('app_message', parsed.message, function(error, response, callback) {
+                        tracetrace();
+                        transport.send(JSON.stringify({
+                            'response_id': parsed.message_id,
+                            'error': error,
+                            'response': response
+                        }), callback);
+                        return null;
+                    });
+                    return null;
                 });
             }
         }
@@ -527,10 +545,12 @@ function WebProxy(host, port) {
         console.error(host);
         console.error(port);
         console.error(error);
+        return null;
     });
     publisher.on('open', function() {
         tracetrace();
         self.emit('connect');
+        return null;
     });
     publisher.app_send = create_app_send_for(publisher);
 
@@ -587,6 +607,11 @@ function WebProxy(host, port) {
             profile.ws_client.on('open', function() {
                 tracetrace();
                 profile.ws_client.app_send(message, callback);
+                return null;
+            });
+            profile.ws_client.on('error', function(error) {
+                tracetrace();
+                console.error(error);
             });
         } else {
             profile.ws_client.app_send(message, callback);

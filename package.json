@@ -1,6 +1,6 @@
 {
   "name": "wisper",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "minimalist websocket pub/sub with regex subscriptions",
   "main": "wisper.js",
   "scripts": {

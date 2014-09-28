@@ -551,4 +551,10 @@ describe('wisper web-proxy subscription', function() {
             }, 100);
         });
     });
+    it('allows you to publish without a callback', function() {
+        var channel_1 = 'thing.foo bar-baz';
+        var channel_2 = 'marco.polo';
+        client.publish('hi', channel_1);
+        client.publish('bye', channel_2);
+    });
 });

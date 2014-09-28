@@ -494,7 +494,9 @@ function create_app_send_for(transport) {
             tracetrace();
             if (error) {
                 retire_message_id(message_id);
-                callback(error);
+                if (callback && _.isFunction(callback)) {
+                    callback(error);
+                }
             }
         });
         return function abandon() {
@@ -554,7 +556,9 @@ function WebProxy(host, port) {
             if (error) {
                 console.error(error);
             }
-            callback(error);
+            if (callback && _.isFunction(callback)) {
+                callback(error);
+            }
         });
     };
     self.subscribe = function subscribe(client, new_regexes, callback) {
@@ -597,7 +601,9 @@ function WebProxy(host, port) {
         var profile = client_profiles.get(client);
         // if not, then there are no subscriptions to remove
         if (!profile) {
-            callback('Cannot unsubscribe - this client has not subscribed to anything.');
+            if (callback && _.isFunction(callback)) {
+                callback('Cannot unsubscribe - this client has not subscribed to anything.');
+            }
         } else {
             profile.ws_client.app_send(message, callback);
         }

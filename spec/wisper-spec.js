@@ -477,3 +477,44 @@ describe("negative tests", function() {
         });
     });
 });
+
+var host_ip = '127.0.0.1';
+var host_port = 8084;
+var service;
+var server;
+var proxy;
+var client;
+
+// Bugs (escapes)
+describe('wisper web-proxy subscription', function() {
+    beforeEach(function(setup_callback) {
+        // setup
+        host_ip = '127.0.0.1';
+        host_port = 8084;
+        service = wisper.create_service();
+        server = wisper.create_web_server(service);
+        server.listen(host_port, function() {
+            proxy = wisper.create_web_proxy(host_ip, host_port);
+            client = wisper.create_client(proxy);
+            proxy.once('connect', setup_callback);
+        });
+    });
+    afterEach(function () {
+        client.unsubscribe();
+        proxy.close();
+        server.close();
+        service = null;
+        server = null;
+        proxy = null;
+        client = null;
+    });
+    it('does not fire a connect event', function(done) {
+        // test
+        var connect_event_caught = false;
+        proxy.on('connect', function() { connect_event_caught = true; });
+        client.subscribe('foo', function() {
+            expect(connect_event_caught).toBeFalsy();
+            done();
+        });
+    });
+});

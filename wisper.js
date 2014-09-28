@@ -517,6 +517,8 @@ function WebProxy(host, port) {
 
     // [ -Inheritance- ]
     events.EventEmitter.call(self);
+
+    // [ -Publisher- ]
     var publisher = new ws('ws://' + host + ':' + port);
     publisher.on('error', function(error) {
         tracetrace();
@@ -580,7 +582,6 @@ function WebProxy(host, port) {
             });
             profile.ws_client.on('open', function() {
                 tracetrace();
-                self.emit('connect');
                 profile.ws_client.app_send(message, callback);
             });
         } else {

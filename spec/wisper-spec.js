@@ -5,6 +5,7 @@
 /* jshint globalstrict: true */
 'use strict';
 /* global require */
+/* global setTimeout */
 /* global describe */
 /* global it */
 /* global beforeEach */
@@ -484,6 +485,17 @@ var service;
 var server;
 var proxy;
 var client;
+var messages = [];
+
+function register_to_save_messages() {
+    client.on('message', function(message, channel) {
+        messages.push({'channel': channel, 'message': message});
+    });
+}
+
+function verify_received(message, channel) {
+    expect(messages).toContain({'channel': channel, 'message': message});
+}
 
 // Bugs (escapes)
 describe('wisper web-proxy subscription', function() {
@@ -507,6 +519,7 @@ describe('wisper web-proxy subscription', function() {
         server = null;
         proxy = null;
         client = null;
+        messages = [];
     });
     it('does not fire a connect event', function(done) {
         // test
@@ -515,6 +528,27 @@ describe('wisper web-proxy subscription', function() {
         client.subscribe('foo', function() {
             expect(connect_event_caught).toBeFalsy();
             done();
+        });
+    });
+    it('allows you to subscribe to two channels with two calls', function(done) {
+        register_to_save_messages();
+        var channel_1 = 'thing.foo bar-baz';
+        var channel_2 = 'marco.polo';
+        async.series([
+            async.apply(client.subscribe, channel_1),
+            async.apply(client.subscribe, channel_2),
+            async.apply(client.publish, 'hi', channel_1),
+            async.apply(client.publish, 'bye', channel_2),
+            async.apply(client.publish, 'what?', channel_1),
+            async.apply(client.publish, 'i said bye', channel_2),
+        ], function() {
+            setTimeout(function() {
+                verify_received('hi', [channel_1]);
+                verify_received('bye', [channel_2]);
+                verify_received('what?', [channel_1]);
+                verify_received('i said bye', [channel_2]);
+                done();
+            }, 100);
         });
     });
 });

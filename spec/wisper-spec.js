@@ -6,6 +6,7 @@
 'use strict';
 /* global require */
 /* global setTimeout */
+/* global setInterval */
 /* global describe */
 /* global it */
 /* global beforeEach */
@@ -14,9 +15,12 @@
 /* global console */
 /* global xit */
 /* global xdescribe */
+/* global clearInterval */
 
 
 // [ Requires ]
+// [ -Node- ]
+var util = require('util');
 // [ -Third Party- ]
 var _ = require('underscore');
 var async = require('async');
@@ -556,5 +560,66 @@ describe('wisper web-proxy subscription', function() {
         var channel_2 = 'marco.polo';
         client.publish('hi', channel_1);
         client.publish('bye', channel_2);
+    });
+});
+var publisher, subscriber, subscriber_2;
+var interval;
+describe('wisper server', function() {
+    beforeEach(function(setup_callback) {
+        // setup
+        host_ip = '127.0.0.1';
+        host_port = 8084;
+        service = wisper.create_service();
+        server = wisper.create_web_server(service);
+        server.listen(host_port, function() {
+            proxy = wisper.create_web_proxy(host_ip, host_port);
+            publisher = wisper.create_client(proxy);
+            subscriber = wisper.create_client(proxy);
+            subscriber_2 = wisper.create_client(proxy);
+            proxy.once('connect', setup_callback);
+        });
+    });
+    afterEach(function () {
+        clearInterval(interval);
+        subscriber.unsubscribe();
+        subscriber_2.unsubscribe();
+        proxy.close();
+        server.close();
+        service = null;
+        server = null;
+        proxy = null;
+        client = null;
+        messages = [];
+    });
+    it('disconnects clients after failed communications', function(done) {
+        // test
+        var message_count = 0;
+        var error_count = 0;
+        subscriber.on('message', function() {
+            proxy._terminate(subscriber);
+        });
+        subscriber_2.on('message', function() {
+            message_count++;
+            if (message_count == 3) {
+                expect(error_count).toEqual(1);
+                done();
+            }
+        });
+        server.on('error', function(error) {
+            error_count++;
+            if (error.action === undefined) {
+                throw new Error("expected error.action to be defined");
+            }
+            expect(error.action).toEqual('Connection abandoned');
+        });
+        subscriber.subscribe('foo', function(error) {
+            if (error) { throw error; }
+            interval = setInterval(function() {
+                publisher.publish('hi there!', 'foo');
+            }, 100);
+        });
+        subscriber_2.subscribe('foo', function(error) {
+            if (error) { throw error; }
+        });
     });
 });

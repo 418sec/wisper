@@ -337,7 +337,18 @@ function Server(service) {
             }, function(error) {
                 tracetrace();
                 if (error) {
-                    console.error(error);
+                    var new_error = new Error();
+                    new_error.name = 'ConnectionError';
+                    new_error.message = 'Unable to send message to remote client';
+                    new_error.action = 'Connection abandoned';
+                    new_error.cause = error;
+                    conn.ps_client.unsubscribe(function(unsub_error) {
+                        conn.close();
+                        conns = _.without(conns, conn);
+                        conn = null;
+                        self.emit('error', new_error);
+                        if (unsub_error) { throw unsub_error; }
+                    });
                 }
             });
             return null;
@@ -350,7 +361,12 @@ function Server(service) {
                 conn.ps_client.subscribe(message.body.new_regexes, function(error) {
                     tracetrace();
                     if (error) {
-                        console.error(error);
+                        var new_error = new Error();
+                        new_error.name = 'ServiceError';
+                        new_error.message = 'Unable to send subscribe to channels';
+                        new_error.channels = message.body.new_regexes;
+                        new_error.cause = error;
+                        self.emit('error', new_error);
                     }
                     callback(error);
                 });
@@ -359,7 +375,13 @@ function Server(service) {
                 conn.ps_client.publish(message.body.message, message.body.channels, function(error) {
                     tracetrace();
                     if (error) {
-                        console.error(error);
+                        var new_error = new Error();
+                        new_error.name = 'ServiceError';
+                        new_error.message = 'Unable to publish';
+                        new_error.message = message.body.message;
+                        new_error.channels = message.body.channels;
+                        new_error.cause = error;
+                        self.emit('error', new_error);
                     }
                     callback(error);
                 });
@@ -368,7 +390,12 @@ function Server(service) {
                 conn.ps_client.unsubscribe(message.body.old_regexes, function(error) {
                     tracetrace();
                     if (error) {
-                        console.error(error);
+                        var new_error = new Error();
+                        new_error.name = 'ServiceError';
+                        new_error.message = 'Unable to unsubscribe from channels';
+                        new_error.channels = message.body.old_regexes;
+                        new_error.cause = error;
+                        self.emit('error', new_error);
                     }
                     callback(error);
                 });
@@ -396,6 +423,8 @@ function Server(service) {
         http_server.close(callback);
     };
 }
+// complete the inheritance
+util.inherits(Server, events.EventEmitter);
 // define an explicit creator function
 function create_web_server(service) {
     debugtrace();
@@ -555,6 +584,10 @@ function WebProxy(host, port) {
     publisher.app_send = create_app_send_for(publisher);
 
     // [ -Public- ]
+    self._terminate = function terminate(client) {
+        var profile = client_profiles.get(client);
+        profile.ws_client._socket.destroy();
+    };
     self.publish = function publish(message, channels, callback) {
         debugtrace({
             message: message,
@@ -574,7 +607,7 @@ function WebProxy(host, port) {
         publisher.app_send(ws_message, function(error) {
             tracetrace();
             if (error) {
-                console.error(error);
+                console.error('WebProxy app_send error: ' + error);
             }
             if (callback && _.isFunction(callback)) {
                 callback(error);

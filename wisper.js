@@ -8,6 +8,7 @@
 /* global exports */
 /* global console */
 /* global process */
+/* global setImmediate */
 
 
 // [ Requires ]
@@ -15,10 +16,13 @@
 var events = require('events');
 var util = require('util');
 var http = require('http');
+var assert = require('assert');
 // [ -Third Party- ]
 var _ = require('underscore');
 var ws = require('ws');
 var bunyan = require('bunyan');
+var VError = require('verror');
+var async = require('async');
 
 
 // [ Logging ]
@@ -29,665 +33,936 @@ var log = bunyan.createLogger({
         path: '/tmp/wisper.log',
         type: 'rotating-file',
         period: '1d',
-        count: 3
+        count: 3,
+        level: "debug",
     }]
 });
-function trace(level) {
-    if (!level) {
-        level = 1;
-    }
-    var original = Error.prepareStackTrace;
-    Error.prepareStackTrace = function(e, stack) {
-        return stack;
-    };
-    var error = new Error();
-    var stack = error.stack;
-    Error.prepareStackTrace = original;
-    var frame = stack[level];
-    var caller = frame.getFunctionName();
-    var file = frame.getFileName();
-    var line_no = frame.getLineNumber();
-    var type_name;
-    try {
-        type_name = frame.getTypeName();
-    } catch (e) {
-        return {
-            caller: caller,
-            file: file,
-            line_no: line_no
-        };
-    }
-    return {
-        type_name: type_name,
-        caller: caller,
-        file: file,
-        line_no: line_no
-    };
-}
-function tracetrace() {
-    if (log.level() >= bunyan.TRACE) {
-        log.trace(trace(2));
-    }
-}
-function debugtrace(arg_obj) {
-    if (log.level() >= bunyan.DEBUG) {
-        log.debug(trace(2), arg_obj);
-    }
-}
-log.level('debug');
 
 
-// [ Arg Checking ]
-function check_args(arg_obj) {
-    for (var prop in arg_obj) {
-        if (arg_obj[prop] === undefined) {
-            throw new Error("Missing argument: " + prop);
-        }
+// [ Object Validation ]
+function validateProperties(object, name, required, optional) {
+    // validates object properties exist or not
+    var properties = _.keys(object);
+    var missing = _.difference(required, properties);
+    var extra = _.difference(properties, required, optional);
+    var errorOrNull = null;
+    if (missing.length) {
+        errorOrNull = new VError("%s is missing required properties (%j)",
+                               name, missing);
+        errorOrNull.missing = missing;
+        errorOrNull.required = required;
+        errorOrNull.object = object;
+    } else if (extra.length) {
+        errorOrNull = new VError("%s has extra (unexpected) properties (%j)",
+                               name, extra);
+        errorOrNull.extra = extra;
+        errorOrNull.required = required;
+        errorOrNull.optional = optional;
+        errorOrNull.object = object;
     }
+    return errorOrNull;
 }
 
 
-// [ Service ]
-function Service() {
-    debugtrace();
-    // [ -Private Vars- ]
-    // self is always the service instance
-    var self = this;
-    //  clients and subscriptions
-    var client_profiles = [];
+//log.info = console.error.bind(console, "info: ");
+//log.debug = console.error.bind(console, "debug: ");
 
-    // [ -Public Funcs, accesses private- ]
-    // Publish
-    self.publish = function publish(message, channels, callback) {
-        debugtrace({
-            message: message,
-            channels: channels,
+
+// [ Optional CB ]
+function callback(unknown) {
+    // returns the cb if a cb
+    // returns a noop function if undefined
+    // throws an error if neither
+    // -------------------------
+    // assume it is a function to be returned
+    var returnFunction = unknown;
+    // check if it's undefined
+    if (unknown === undefined) {
+        // if it is, replace it with a noop function
+        returnFunction = _.noop;
+    // otherwise, check if it's a function
+    } else if (!_.isFunction(unknown)) {
+        // if not a function and not undefined, something
+        // is unexpected, programmatically.
+        var error = new VError("Defined object passed as a callback is not a function");
+        error.object = unknown;
+        throw error;
+    }
+    // get here if either it was a function in the first place
+    // or was undefined and we defined it.  Return the function.
+    return returnFunction;
+}
+
+
+// [ Hub ]
+// create the hub type
+function createHubType() {
+    log.info("create hub");
+    // [ -Events- ]
+    // error - emitted when received messages are poorly formatted
+    // listen - emitted when listening
+    // close - emitted when the hub is closed
+    // status - various hub status updates
+    // [ -Constructor- ]
+    function Hub() {
+        log.info("instantiate hub");
+        // get non-ambiguous this
+        var self = this;
+        // Call parent constructor
+        Hub.super_.call(self);
+        // Internal structures
+        self._subscribers = {};
+        // subsribers is { source._id: {'source': source, patterns: [pattern*]}}
+        self._transport = undefined;
+        self._closed = false;
+        // state listeners
+        self.once('close', function handleClosed() {
+            self._closed = true;
         });
-        check_args({
-            message: message,
-            channels: channels,
-        });
-        // publish the message on all specified channels
-        // callback is called when publication is complete.
-        // ensure channels is an array
-        if (! _.isArray(channels)) {
-            channels = [channels];
-        }
-        // goal is for each client to receive:
-        //  - the message
-        //  - the channels it was published on
-        //  - the regexes subscribed to which matched
-        // service should send the message and channels to each client
-        // for which any of the client's subscribed regexes match any channel.
-        // the client should do any further logic on the message/channels/regexes.
-        // for each channel
-        _.each(client_profiles, function(profile) {
-            tracetrace();
-            // do any channels match any regexes?
-            var subscription;
-            var send = _.some(channels, function(channel) {
-                tracetrace();
-                // does this channel match any regexes?
-                return _.some(profile.regexes, function(regex) {
-                    tracetrace();
-                    // does this channel match this regex?
-                    var match = channel.match(regex);
-                    // if so, save the subscription
-                    if (match) {
-                        subscription = regex.slice(0, regex.length-1);
-                    }
-                    // return match status
-                    return match;
-                });
-            });
-            // if so, then send them
-            if (send) {
-                profile.client.receive(message, channels, subscription);
-            }
-        });
-        if (callback) callback(null);
-        return null;
-    };
-    // Subscribe
-    self.subscribe = function subscribe(client, new_regexes, callback) {
-        debugtrace();
-        // check if client is in client profiles
-        var profile = null;
-        for (var i=0; i < client_profiles.length; i++) {
-            if (_.isEqual(client, client_profiles[i].client)) {
-                profile = client_profiles[i];
-                break;
-            }
-        }
-        // if not, add it
-        if (!profile) {
-            profile = {'client': client, 'regexes': []};
-            client_profiles.push(profile);
-        }
-        // check if regex exists in profile
-        _.each(new_regexes, function(new_regex) {
-            tracetrace();
-            if(!_.contains(profile.regexes, new_regex)) {
-                profile.regexes.push(new_regex + '$');
-            }
-        });
-        callback(null);
-        return null;
-    };
-    // Unsubscribe
-    self.unsubscribe = function unsubscribe(client, old_regexes, callback) {
-        debugtrace();
-        // check if client is in client profiles
-        var profile = null;
-        for (var i=0; i < client_profiles.length; i++) {
-            if (_.isEqual(client, client_profiles[i].client)) {
-                profile = client_profiles[i];
-                break;
-            }
-        }
-        // if so, remove them
-        if (profile) {
-            // check if regex exists in profile
-            _.each(old_regexes, function(old_regex) {
-                old_regex = old_regex + '$';
-                tracetrace();
-                if(_.contains(profile.regexes, old_regex)) {
-                    profile.regexes = _.without(profile.regexes, old_regex);
-                }
-            });
-            // check if any regexes, remove profile if not
-            if (profile.regexes.length === 0) {
-                client_profiles = _.without(client_profiles, profile);
-            }
-        }
-        if (callback) {
-            callback(null);
-        }
-        return null;
-    };
-}
-// complete the inheritance
-util.inherits(Service, events.EventEmitter);
-// define an explicit creator function
-function create_service() {
-    debugtrace();
-    return new Service();
-}
-
-
-// [ Client ]
-function Client(service) {
-    debugtrace();
-    // [ -Private Vars- ]
-    // self is always the service instance
-    var self = this;
-    // channels subscribed to
-    var regexes = [];
-
+        // Constructor.  Return undefined.
+        return undefined;
+    }
     // [ -Inheritance- ]
-    events.EventEmitter.call(self);
-
-    // [ -Public, accesses private- ]
-    self.subscribe = function subscribe(new_regexes, callback) {
-        debugtrace(new_regexes);
-        // handle the case where subscribe is called only with
-        // a callback
-        if (_.isFunction(new_regexes) && !callback) {
-            callback = new_regexes;
-            new_regexes = ['.*'];
-        }
-        if (callback === undefined) {
-            callback = function() {};
-        }
-        // make regexes a list if it's not
-        if (!_.isArray(new_regexes)) {
-            new_regexes = [new_regexes];
-        }
-        for ( var i=0; i < new_regexes.length; i++) {
-            var new_regex = new_regexes[i];
-            tracetrace();
-            // test regex
-            try {
-                var regexp = new RegExp(new_regex);
-            } catch(e) {
-                callback(e);
-                return null;
-            }
-            // check if regex exists in profile
-            if(!_.contains(regexes, new_regex)) {
-                regexes.push(new_regex);
-            }
-        }
-        service.subscribe(self, new_regexes, callback);
-        return null;
+    util.inherits(Hub, events.EventEmitter);
+    // [ -Private API- ]
+    // disconnect a client
+    Hub.prototype._disconnectClient = function hubDisconnectClient(client, error, cb) {
+        client.close(cb);
+        setImmediate(this.emit.bind(this), 'status', "closed client connection", error);
+        this.emit('error', error);
+        // allow chaining
+        return this;
     };
-    self.publish = service.publish;
-    self.receive = function receive(message, channels, subscription) {
-        debugtrace({
-            message: message,
-            channels: channels,
-            subscription: subscription
-        });
-        // receive a message and the channels it was broadcast on.
-        // emit the expected signature.
-        process.nextTick(function() {
-            self.emit('message', message, channels, subscription);
-            return null;
-        });
-        return null;
-    };
-    self.unsubscribe = function unsubscribe(old_regexes, callback) {
-        debugtrace(old_regexes);
-        // handle the case where subscribe is called only with
-        // a callback
-        if (_.isFunction(old_regexes) && !callback) {
-            callback = old_regexes;
-            old_regexes = regexes;
-        }
-        // make regexes a list if it's not
-        if (!_.isArray(old_regexes)) {
-            old_regexes = [old_regexes];
-        }
-        _.each(old_regexes, function(old_regex) {
-            tracetrace();
-            // check if regex exists in profile
-            if(_.contains(regexes, old_regex)) {
-                regexes = _.without(regexes, old_regex);
-            }
-        });
-        service.unsubscribe(self, old_regexes, callback);
-        return null;
-    };
-}
-// complete the inheritance
-util.inherits(Client, events.EventEmitter);
-// define an explicit creator function
-function create_client(service) {
-    debugtrace();
-    return new Client(service);
-}
-
-
-// [ Server ]
-function Server(service) {
-    debugtrace();
-    // [ -Private Vars- ]
-    // self is always this instance
-    var self = this;
-    var WSServer = ws.Server;
-    var http_server = http.createServer();
-    var ws_server = new WSServer({'server': http_server});
-    var conns = [];
-
-    ws_server.on('connection', function(conn) {
-        tracetrace();
-        // add a new client for this conn
-        conn.ps_client = create_client(service);
-        // add a new app send/recv to conn
-        conn.app_send = create_app_send_for(conn);
-        // record the conn
-        conns.push(conn);
-        // send when something is published
-        conn.ps_client.on('message', function(message, published_channels, subscription) {
-            tracetrace();
-            conn.app_send({
-                'message': message,
-                'p_channels': published_channels,
-                's_channel': subscription
-            }, function(error) {
-                tracetrace();
-                if (error) {
-                    var new_error = new Error();
-                    new_error.name = 'ConnectionError';
-                    new_error.message = 'Unable to send message to remote client';
-                    new_error.action = 'Connection abandoned';
-                    new_error.cause = error;
-                    conn.ps_client.unsubscribe(function(unsub_error) {
-                        conn.close();
-                        conns = _.without(conns, conn);
-                        conn = null;
-                        self.emit('error', new_error);
-                        if (unsub_error) { throw unsub_error; }
-                    });
-                }
+    // handle publication request
+    Hub.prototype._handlePublication = function hubHandlePublication(source, messageObj) {
+        log.info("hub on publication");
+        // get a non-ambiguous "this"
+        var self = this;
+        var error = validateProperties(
+            messageObj,
+            "publication message from transport layer",
+            ['type', 'message', 'channel', 'transactionID'],
+            []
+        );
+        if (error) { self._disconnectClient(source, error); return null; }
+        // FIXME message should be JSON
+        // FIXME channel should be regex
+        self._distribute(messageObj.message, messageObj.channel, function distributeCB(numPublished) {
+            // notify source of publication and number published
+            source.send({
+                type: 'published',
+                'message': messageObj.message,
+                channel: messageObj.channel,
+                number: numPublished,
+                transactionID: messageObj.transactionID,
+            }, function onError(error) {
+                if (error) { self._disconnectClient(source, error); }
             });
-            return null;
         });
-        // listen to messages
-        conn.on('app_message', function(message, callback) {
-            tracetrace();
-            // subscribe to this service only.
-            if (message.type == 'subscribe') {
-                conn.ps_client.subscribe(message.body.new_regexes, function(error) {
-                    tracetrace();
-                    if (error) {
-                        var new_error = new Error();
-                        new_error.name = 'ServiceError';
-                        new_error.message = 'Unable to send subscribe to channels';
-                        new_error.channels = message.body.new_regexes;
-                        new_error.cause = error;
-                        self.emit('error', new_error);
-                    }
-                    callback(error);
-                });
-            // publish to all services
-            } else if (message.type == 'publish') {
-                conn.ps_client.publish(message.body.message, message.body.channels, function(error) {
-                    tracetrace();
-                    if (error) {
-                        var new_error = new Error();
-                        new_error.name = 'ServiceError';
-                        new_error.message = 'Unable to publish';
-                        new_error.message = message.body.message;
-                        new_error.channels = message.body.channels;
-                        new_error.cause = error;
-                        self.emit('error', new_error);
-                    }
-                    callback(error);
-                });
-            // unsubscribe
-            } else if (message.type == 'unsubscribe') {
-                conn.ps_client.unsubscribe(message.body.old_regexes, function(error) {
-                    tracetrace();
-                    if (error) {
-                        var new_error = new Error();
-                        new_error.name = 'ServiceError';
-                        new_error.message = 'Unable to unsubscribe from channels';
-                        new_error.channels = message.body.old_regexes;
-                        new_error.cause = error;
-                        self.emit('error', new_error);
-                    }
-                    callback(error);
-                });
-            }
-            return null;
-        });
-        // remove service when this conn closes
-        conn.on('close', function() {
-            tracetrace();
-            conn.ps_client.unsubscribe();
-            return null;
-        });
-        return null;
-    });
-
-    // [ -Public, accesses Private- ]
-    // listen on port
-    self.listen = http_server.listen.bind(http_server);
-    // close the server
-    self.close = function close(callback) {
-        debugtrace();
-        // don't close client connections - it causes a race and a leaked timeout in the server.
-        // see issue at https://github.com/einaros/ws/issues/343
-        ws_server.close();
-        http_server.close(callback);
+        // allow chaining
+        return this;
     };
-}
-// complete the inheritance
-util.inherits(Server, events.EventEmitter);
-// define an explicit creator function
-function create_web_server(service) {
-    debugtrace();
-    return new Server(service);
-}
-
-
-// [ Client Profile List ]
-function ClientProfileList() {
-    debugtrace();
-    // [ -Private Vars- ]
-    // self is always this instance
-    var self = this;
-
-    // [ -Public Vars- ]
-    self.list = [];
-
-    // [ -Public Func, uses Private- ]
-    self.get = function(client) {
-        tracetrace();
-        var profile = null;
-        for (var i=0; i < self.list.length; i++) {
-            if (_.isEqual(client, self.list[i].client)) {
-                profile = self.list[i];
-                break;
+    // handle subscription request
+    Hub.prototype._handleSubscription = function hubHandleSubscription(source, messageObj) {
+        log.info("hub on subscription");
+        // get a non-ambiguous "this"
+        var self = this;
+        var error = validateProperties(
+            messageObj,
+            "subscription message from transport layer",
+            ['type', 'pattern', 'transactionID'],
+            []
+        );
+        if (error) { self._disconnectClient(source, error); return null; }
+        // FIXME - pattern should be a regex
+        var subscriber = self._subscribers[source._id];
+        if (subscriber === undefined) {
+            subscriber = {
+                patterns: [],
+                connection: source,
+            };
+            log.debug("number of unique subscribers: ", _.keys(self._subscribers).length + 1);
+        }
+        if (!_.contains(subscriber.patterns, messageObj.pattern)) {
+            subscriber.patterns.push(messageObj.pattern);
+        }
+        self._subscribers[source._id] = subscriber;
+        // notify source that subscription is in place
+        source.send({
+            type: 'subscribed',
+            pattern: messageObj.pattern,
+            number: subscriber.patterns.length,
+            transactionID: messageObj.transactionID,
+        }, function onError(error) {
+            if (error) { self._disconnectClient(source, error); }
+        });
+        // allow chaining
+        return this;
+    };
+    // handle unsubscription request
+    Hub.prototype._handleUnsubscription = function hubHandleUnsubscription(source, messageObj) {
+        log.info("hub on unsubscription");
+        // get a non-ambiguous "this"
+        var self = this;
+        var error = validateProperties(
+            messageObj,
+            "unsubscription message from transport layer",
+            ['type', 'pattern', 'transactionID'],
+            []
+        );
+        if (error) { self._disconnectClient(source, error); return null; }
+        // FIXME - pattern should be a regex
+        var subscriber = self._subscribers[source._id];
+        var numPatterns = 0;
+        if (subscriber && _.contains(subscriber.patterns, messageObj.pattern)) {
+            subscriber.patterns = _.without(subscriber.patterns, messageObj.pattern);
+            if (subscriber.patterns.length === 0) {
+                delete self._subscribers[source._id];
+                log.debug("number of unique subscribers: ", _.keys(self._subscribers).length);
+            } else {
+                numPatterns = subscriber.patterns.length;
             }
         }
-        return profile;
+        // notify source that unsubscription occurred
+        source.send({
+            type: 'unsubscribed',
+            pattern: messageObj.pattern,
+            number: numPatterns,
+            transactionID: messageObj.transactionID,
+        }, function onError(error) {
+            if (error) { self._disconnectClient(source, error); }
+        });
+        // allow chaining
+        return this;
     };
-}
-
-// [ Remote Callback ]
-function create_app_send_for(transport) {
-    tracetrace();
-    // ID Table
-    var table = {};
-    // set the getter
-    function get_message_id () {
-        tracetrace();
-        var candidate_id;
-        // generate random ID's till the candidate isn't in the table
-        do {
-            candidate_id = (Math.random() * 100000000000000000).toString(16);
-        } while (table[candidate_id]);
-        // return it
-        return candidate_id;
-    }
-    // set the deleter
-    function retire_message_id (message_id) {
-        tracetrace();
-        if (table[message_id]) {
-            delete table[message_id];
+    // unsubscribe a dead client
+    Hub.prototype._unsubscribeFromAll = function hubUnsubscribeFromAll(source) {
+        log.info("hub _unsubscribeFromAll", source);
+        if (_.contains(_.keys(this._subscribers)), source._id) {
+            delete this._subscribers[source._id];
+            this.emit('status', "client disconnected", source._id);
         }
-        return null;
-    }
-    // app send
-    // have a single message listener that parses all the messages
-    transport.on('message', function(response) {
-        tracetrace();
-        var parsed = JSON.parse(response);
-        var response_id = parsed.response_id;
-        if (response_id) {
-            var callback = table[response_id];
-            if (callback) {
-                retire_message_id(response_id);
-                callback(parsed.error, parsed.response);
-            }
-        } else if (parsed.message_id) {
-            if (parsed.message_id === 0) {
-                // No response requested, and no listener on other end
-                process.nextTick(function() {
-                    tracetrace();
-                    transport.emit('app_message', parsed.message, function(error, response, callback) {
-                        tracetrace();
-                        callback(null, "Warning: no callback was registered by the remote peer." +
-                                 "  The peer will not be informed of the error or result.");
-                        return null;
-                    });
+        // allow chaining
+        return this;
+    };
+    // handle messages from clients
+    Hub.prototype._handleMessage = function hubHandleMessage(source, messageObj) {
+        log.info("hub handle message", messageObj);
+        // parse the message type and respond accordingly
+        if (!messageObj.type) {
+            var noTypeError = new VError("Message from transport layer has no type (%j)", messageObj);
+            this._disconnectClient(source, noTypeError);
+        } else if (messageObj.type == "publication") {
+            this._handlePublication(source, messageObj);
+        } else if (messageObj.type == "subscription") {
+            this._handleSubscription(source, messageObj);
+        } else if (messageObj.type == "unsubscription") {
+            this._handleUnsubscription(source, messageObj);
+        } else {
+            var badTypeError = new VError("Unrecognized message type from transport layer: %s. (%j)", messageObj.type, messageObj);
+            this._disconnectClient(source, badTypeError);
+        }
+        // allow chaining
+        return this;
+    };
+    // distribute a message to subscribers
+    Hub.prototype._distribute = function hubDistribute(message, channel, cb) {
+        // distribute a message on a channel to subscribers
+        // get a non-ambiguous "this"
+        var self = this;
+        // new message object for distribution to clients
+        var newMessageObj = {
+            type: 'distribution',
+            'message': message,
+            'channel': channel,
+        };
+        // send to each subscriber
+        var numPublished = 0;
+        var match;
+        var matchPattern = function matchPattern(pattern) {
+            // closure for match.
+            // returns true/false for match test, and also sets
+            // the matching pattern
+            match = pattern;
+            return channel.match(pattern);
+        };
+        async.eachSeries(_.keys(self._subscribers), function distribute(subscriberId, eachCB) {
+            // error response
+            var subscriber = self._subscribers[subscriberId];
+            if (_.any(subscriber.patterns, matchPattern)) {
+                newMessageObj.match = match;
+                subscriber.connection.send(newMessageObj, function sendError(error) {
+                    log.debug('hub sent to client (%j)', newMessageObj);
+                    // close the client conn on error.
+                    if (error) {
+                        self._disconnectClient(subscriber.connection, error, eachCB);
+                    } else {
+                        numPublished++;
+                        eachCB();
+                    }
                     return null;
                 });
             } else {
-                // Client wants a response
-                process.nextTick(function() {
-                    transport.emit('app_message', parsed.message, function(error, response, callback) {
-                        tracetrace();
-                        transport.send(JSON.stringify({
-                            'response_id': parsed.message_id,
-                            'error': error,
-                            'response': response
-                        }), callback);
-                        return null;
-                    });
-                    return null;
-                });
+                eachCB();
             }
-        }
-        return null;
-    });
-    function app_send(message, callback) {
-        debugtrace(message);
-        // unique identifier for this message
-        var message_id = get_message_id();
-        // register for response
-        if (callback) {
-            table[message_id] = callback;
-        } else {
-            message_id = 0;
-        }
-        // send
-        transport.send(JSON.stringify({
-            'message_id': message_id,
-            'message': message
-        }), function(error) {
-            tracetrace();
-            if (error) {
-                retire_message_id(message_id);
-                if (callback && _.isFunction(callback)) {
-                    callback(error);
-                }
-            }
+            return null;
+        }, function eachFinal() {
+            // errors here would come from disconnectClient, which calls
+            // the cb when the client is closed.
+            // Client.close does not report an error on close.
+            callback(cb)(numPublished);
+            return null;
         });
-        return function abandon() {
-            debugtrace();
-            retire_message_id(message_id);
+        return this;
+    };
+    // [ -Public API- ]
+    // close a transport object
+    Hub.prototype.close = function hubClose(cb) {
+        log.info("hub close");
+        if (this._closed) {
+            throw new VError("Hub has already been closed");
+        }
+        // add cb to listeners
+        if (cb) {
+            this.on('close', cb);
+        }
+        this._transport.close();
+        // it doesn't make sense to do anything with the object after this,
+        // so return null
+        return null;
+    };
+    // listen for connections
+    Hub.prototype.listen = function hubListen(options, cb) {
+        log.info("hub listen");
+        // non-ambiguous self
+        var self = this;
+        // FIXME - deal with options better - ask for url/http explicitly?
+        // only allow this to be called once on the object
+        if (self._transport) {
+            // throw immediately - this is programmer error
+            throw new VError("'listen' has already been called on this hub.");
+        }
+        // add cb to listeners
+        if (cb) {
+            self.on('listening', cb);
+        }
+        // set transport
+        self._transport = new ActualTransportServer();
+        // proxy events
+        self._transport.on('listening', self.emit.bind(self, 'listening'));
+        self._transport.on('close', self.emit.bind(self, 'close'));
+        // handle client actions
+        self._transport.on('client closed', self._unsubscribeFromAll.bind(self));
+        self._transport.on('message', self._handleMessage.bind(self));
+        // handle transport actions
+        self._transport.on('error', function handleTransportError() {
+            // FIXME need a test for this
+            // FIXME need some notice - either a propagated error event or a reason for the close
+            self.close();
+        });
+        // listen
+        self._transport.listen(options);
+        // it doesn't make sense to do anything with the object until listen
+        // calls back, so return null
+        return null;
+    };
+    // return a new Hub
+    return Hub;
+}
+var ActualHub = createHubType();
+
+
+// [ Client ]
+// create the client type
+function createClientType() {
+    log.info("create client");
+    // [ -Events- ]
+    // error - when there's a problem with a received message
+    // open - when the connection is open
+    // close - when the connection is closed
+    // message - when there's a message from the hub
+    // [ -Constructor- ]
+    function Client() {
+        log.info("instantiate client");
+        // get non-ambiguous this
+        var self = this;
+        // Call parent constructor
+        Client.super_.call(self);
+        // Internal structures
+        self._transport = undefined;
+        self._txRegistry = {};
+        self._lastTxId = 0;
+        self._txLimit = 1000;
+        self._state = "NOT_OPENED";
+        self._messageDispatch = {
+            distribution: self._handleDistribution.bind(self),
+            published: self._handlePublication.bind(self),
+            subscribed: self._handleSubscription.bind(self),
+            unsubscribed: self._handleUnsubscription.bind(self),
         };
+        // state listeners
+        self.once("open", function handleOpened() {
+            self._state = "OPEN";
+        }).once("close", function handleClosed() {
+            self._state = "CLOSED";
+        });
+        // constructor - return undefined
+        return undefined;
     }
-    return app_send;
-}
-
-
-// [ Web Proxy ]
-function WebProxy(host, port) {
-    debugtrace();
-    // [ -Private Vars- ]
-    // self is always the service instance
-    var self = this;
-    //  clients and subscriptions
-    var client_profiles = new ClientProfileList();
-
     // [ -Inheritance- ]
-    events.EventEmitter.call(self);
-
-    // [ -Publisher- ]
-    var publisher = new ws('ws://' + host + ':' + port);
-    publisher.on('error', function(error) {
-        tracetrace();
-        console.error(host);
-        console.error(port);
-        console.error(error);
-        return null;
-    });
-    publisher.on('open', function() {
-        tracetrace();
-        self.emit('connect');
-        return null;
-    });
-    publisher.app_send = create_app_send_for(publisher);
-
-    // [ -Public- ]
-    self._terminate = function terminate(client) {
-        var profile = client_profiles.get(client);
-        profile.ws_client._socket.destroy();
+    util.inherits(Client, events.EventEmitter);
+    // [ -Private API- ]
+    // check state for OPEN
+    Client.prototype._checkState = function clientCheckState() {
+        if (this._state !== "OPEN") {
+            throw new VError("Nonsensical to call before 'open' or after 'close' events");
+        }
+        return this;
     };
-    self.publish = function publish(message, channels, callback) {
-        debugtrace({
-            message: message,
-            channels: channels
-        });
-        check_args({
-            message: message,
-            channels: channels,
-        });
-        var ws_message = {
-            'type': 'publish',
-            'body': {
-                'message': message,
-                'channels': channels
+    // get a transaction ID
+    Client.prototype._getTxID = function clientGetTxID() {
+        var txid;
+        // try the last txid + 1 first
+        var candidate = this._lastTxId + 1;
+        // try to get a txid until we get one, or we've failed _txLimit times
+        // (this means we have _txLimit txid's already assigned)
+        var tries = 0;
+        while (txid === undefined && tries < this._txLimit) {
+            tries++;
+            candidate %= this._txLimit;
+            if (this._txRegistry[candidate] === undefined) {
+                txid = candidate;
+            } else {
+                candidate++;
             }
-        };
-        publisher.app_send(ws_message, function(error) {
-            tracetrace();
+        }
+        // catch the error exit
+        if (txid === undefined) {
+            throw new VError("Cannot issue a transaction ID - too many outstanding transactions (%d)", this._txLimit);
+        }
+        // set the last txid and return it to the caller
+        this._lastTxId = txid;
+        return txid;
+    };
+    // register a transaction ID
+    Client.prototype._registerTxID = function clientRegisterTxID(txid, cb) {
+        this._txRegistry[txid] = cb;
+        // allow chaining
+        return this;
+    };
+    // retire a transaction ID
+    Client.prototype._retireTxID = function clientRetireTxID(txid) {
+        delete this._txRegistry[txid];
+        // allow chaining
+        return this;
+    };
+    // handle publication message
+    Client.prototype._handlePublication = function clientHandlePublication(messageObj) {
+        log.info("client handle publication");
+        // validate message
+        var error = validateProperties(
+            messageObj,
+           "published message from transport layer",
+           ['type', 'message', 'channel', 'number', 'transactionID'],
+           []
+        );
+        // FIXME - message should be JSON
+        // FIXME - channel should be string
+        // FIXME - number should be a number
+        // FIXME - txid should be number
+        // FIXME - need a test for no tx callback (on purpose)
+        if (error) { this.emit('error', error); return null; }
+        var transactionCallback = this._txRegistry[messageObj.transactionID];
+        if (transactionCallback) {
+            transactionCallback(null, messageObj.message, messageObj.channel, messageObj.number);
+            this._retireTxID(messageObj.transactionID);
+        } else {
+            this.emit('error', new VError("received a message with an unrecognized transaction ID: %j", messageObj));
+        }
+        // allow chaining
+        return this;
+    };
+    // handle subscription message
+    Client.prototype._handleSubscription = function clientHandleSubscription(messageObj) {
+        log.info("client on subscribed");
+        var error = validateProperties(
+            messageObj,
+           "subscribed message from transport layer",
+           ['type', 'pattern', 'number', 'transactionID'],
+           []
+        );
+        // FIXME - pattern should be regex
+        // FIXME - number should be a number
+        if (error) { this.emit('error', error); return null; }
+        var transactionCallback = this._txRegistry[messageObj.transactionID];
+        if (transactionCallback) {
+            log.debug("calling tx callback with", messageObj.pattern, messageObj.number);
+            transactionCallback(null, messageObj.pattern, messageObj.number);
+            this._retireTxID(messageObj.transactionID);
+        } else {
+            this.emit('error', new VError("received a message with an unrecognized transaction ID: %j", messageObj));
+        }
+        // allow chaining
+        return this;
+    };
+    // handle unsubscription message
+    Client.prototype._handleUnsubscription = function clientHandleUnsubscription(messageObj) {
+        log.info("client on unsubscribed");
+        var error = validateProperties(
+            messageObj,
+           "unsubscribed message from transport layer",
+           ['type', 'pattern', 'number', 'transactionID'],
+           []
+        );
+        // FIXME - pattern should be regex
+        // FIXME - number should be a number
+        if (error) { this.emit('error', error); return null; }
+        var transactionCallback = this._txRegistry[messageObj.transactionID];
+        if (transactionCallback) {
+            transactionCallback(null, messageObj.pattern, messageObj.number);
+            this._retireTxID(messageObj.transactionID);
+        } else {
+            this.emit('error', new VError("received a message with an unrecognized transaction ID: %j", messageObj));
+        }
+        // allow chaining
+        return this;
+    };
+    // handle distributions
+    Client.prototype._handleDistribution = function clientDistribute(messageObj) {
+        log.info("client on distribution");
+        var error = validateProperties(
+            messageObj,
+           "distribution message from transport layer",
+           ['type', 'message', 'channel', 'match'],
+           []
+        );
+        // FIXME - message should be JSON
+        // FIXME - channel should be string
+        // FIXME - match should be a regex
+        if (error) { this.emit('error', error); return null; }
+        this.emit('message', messageObj.message, messageObj.channel, messageObj.match);
+        // allow chaining
+        return this;
+    };
+    // handle messages from the transport layer
+    Client.prototype._handleMessage = function clientHandleMessage(messageObj) {
+        log.info("client handle message", this._id, messageObj);
+        // parse the message type and respond accordingly
+        var handler = this._messageDispatch[messageObj.type];
+        if (handler === undefined) {
+            this.emit('error', new VError("No dispatcher found for message type (%s) (%j)", messageObj.type, messageObj));
+        } else {
+            handler(messageObj);
+        }
+        // allow chaining
+        return this;
+    };
+    // [ -Public API- ]
+    // get/set the limit for the max number of client-initiated
+    // transactions in flight simultaneously
+    Client.prototype.txLimit = function clientTxLimit(limit) {
+        if (limit) {
+            this._txLimit = limit;
+        }
+        return this._txLimit;
+    };
+    // subscribe a subscriber
+    Client.prototype.subscribe = function clientSubscribe(pattern, cb) {
+        log.info("client subscribe", this._transport._id, pattern);
+        // get a non-ambiguous "this"
+        var self = this;
+        // check state
+        this._checkState();
+        // get a transaction id
+        var txid;
+        try {
+            txid = self._getTxID();
+        } catch (e) {
+            callback(cb)(new VError(e, "cannot subscribe - no transaction ID available."));
+            // early return because we don't want to execute anything else,
+            // and js has no try/catch/else
+            return self;
+        }
+        self._registerTxID(txid, callback(cb));
+        // send subscription request
+        self._transport.send({
+            type: 'subscription',
+            'pattern': pattern,
+            transactionID: txid,
+        }, function handleCompletion(error) {
+            // if there's an error, need to retire the TXID early.
+            // assumes a send error means the message was not sent,
+            // and there's not going to be a corresponding response.
             if (error) {
-                console.error('WebProxy app_send error: ' + error);
+                self._retireTxID(txid);
+                cb(error);
             }
-            if (callback && _.isFunction(callback)) {
-                callback(error);
-            }
+            return null;
         });
+        // allow chaining of calls
+        return self;
     };
-    self.subscribe = function subscribe(client, new_regexes, callback) {
-        debugtrace();
-        // check if client is in profiles
-        var message = {
-            'type': 'subscribe',
-            'body': { 'new_regexes': new_regexes }
-        };
-        var profile = client_profiles.get(client);
-        // if not, add it
-        if (!profile) {
-            client_profiles.list.push({
-                'client': client,
-                'ws_client': new ws('ws://' + host + ':' + port)
-            });
-            profile = client_profiles.get(client);
-            profile.ws_client.app_send = create_app_send_for(profile.ws_client);
-            // [ -Internal Events- ]
-            profile.ws_client.on('app_message', function(message, callback) {
-                tracetrace();
-                profile.client.receive(message.message, message.p_channels, message.s_channel);
-                callback();
-                return null;
-            });
-            profile.ws_client.on('open', function() {
-                tracetrace();
-                profile.ws_client.app_send(message, callback);
-                return null;
-            });
-            profile.ws_client.on('error', function(error) {
-                tracetrace();
-                console.error(error);
-            });
-        } else {
-            profile.ws_client.app_send(message, callback);
+    // unsubscribe a pattern
+    Client.prototype.unsubscribe = function clientUnsubscribe(pattern, cb) {
+        log.info("client unsubscribe", this._transport._id, pattern);
+        // get a non-ambiguous "this"
+        var self = this;
+        // check state
+        this._checkState();
+        // get a transaction id
+        var txid;
+        try {
+            txid = self._getTxID();
+        } catch (e) {
+            callback(cb)(new VError(e, "cannot unsubscribe - no transaction ID available."));
+            return self;
         }
-    };
-    self.unsubscribe = function unsubscribe(client, old_regexes, callback) {
-        debugtrace();
-        var message = {
-            'type': 'unsubscribe',
-            'body': { 'old_regexes': old_regexes }
-        };
-        var profile = client_profiles.get(client);
-        // if not, then there are no subscriptions to remove
-        if (!profile) {
-            if (callback && _.isFunction(callback)) {
-                callback('Cannot unsubscribe - this client has not subscribed to anything.');
+        self._registerTxID(txid, callback(cb));
+        // send unsubscription request
+        self._transport.send({
+            type: 'unsubscription',
+            'pattern': pattern,
+            transactionID: txid,
+        }, function handleCompletion(error) {
+            // if there's an error, need to retire the TXID early.
+            // assumes a send error means the message was not sent,
+            // and there's not going to be a corresponding response.
+            if (error) {
+                self._retireTxID(txid);
+                callback(cb)(error);
             }
+            return null;
+        });
+        // allow chaining
+        return self;
+    };
+    // publish to subscribers
+    Client.prototype.publish = function clientPublish(message, channel, cb) {
+        log.info("client publish", this._transport._id, message);
+        var self = this;
+        // check state
+        this._checkState();
+        // get a transaction id
+        var txid;
+        try {
+            txid = self._getTxID();
+        } catch (e) {
+            callback(cb)(new VError(e, "cannot publish - no transaction ID available."));
+            return self;
+        }
+        self._registerTxID(txid, callback(cb));
+        // send publication request
+        self._transport.send({
+            type: 'publication',
+            'message': message,
+            'channel': channel,
+            transactionID: txid,
+        }, function handleCompletion(error) {
+            // if there's an error, need to retire the TXID early.
+            // assumes a send error means the message was not sent,
+            // and there's not going to be a corresponding response.
+            if (error) {
+                self._retireTxID(txid);
+                callback(cb)(new VError(error, "Error sending to hub"));
+            }
+            return null;
+        });
+        // allow chaining
+        return self;
+    };
+    // close a transport object
+    Client.prototype.close = function clientClose() {
+        log.info("client close");
+        if (this._state !== "OPEN") {
+            throw new VError("Cannot close a client which is not open");
+        }
+        this._transport.close();
+        // it doesn't make sense to do anything with the object after this,
+        // so return null
+        return null;
+    };
+    // connect to listening client
+    Client.prototype.connect = function clientConnect(url, cb) {
+        log.info("client connect");
+        // only allow this to be called once on the object
+        if (this._transport) {
+            // throw immediately - this is programmer error
+            throw new VError("'connect' has already been called on this client.");
+        }
+        // add cb to listeners
+        if (cb) {
+            this.on('open', cb);
+        }
+        // open a new transport connection
+        this._transport = new ActualTransportClient();
+        this._transport.connect(url);
+        // proxy some events
+        this._transport.on('open', this.emit.bind(this, 'open'));
+        this._transport.on('close', this.emit.bind(this, 'close'));
+        // handle messages from transport
+        this._transport.on('message', this._handleMessage.bind(this));
+        // it doesn't make sense to do anything with the object until connect
+        // calls back, so return null
+        return null;
+    };
+    // return a new Client
+    return Client;
+}
+var ActualClient = createClientType();
+
+
+// [ Transport Server ]
+// create server type
+function createTransportServerType() {
+    log.info("create transport server type");
+    // [ -Events- ]
+    // message - a message with transport client source
+    // client closed - emitted when a client is closed, with the client
+    // close - emitted when the transport is closed
+    // error - emitted when the underlying ws has an error
+    // listening - emitted when the server is listening
+    // [ -Constructor- ]
+    function TransportServer() {
+        log.info("instantiate transport server");
+        // get non-ambiguous this
+        var self = this;
+        // Call parent constructor
+        TransportServer.super_.call(self);
+        // Internal structures
+        self._ws = undefined;
+        self._id = _.uniqueId();
+        self._closed = false;
+        // state listeners
+        self.once('close', function handleClosed() {
+            self._closed = true;
+        });
+        // constructor. return undefined
+        return undefined;
+    }
+    // [ -Inheritance- ]
+    util.inherits(TransportServer, events.EventEmitter);
+    // [ -Private API- ]
+    TransportServer.prototype._handleConnection = function transportServerHandleConnection(wsc) {
+        log.info("Transport server handle connection");
+        // create a source with send/close
+        var source = new ActualTransportClient();
+        source.wrap(wsc);
+        // proxy events
+        source.on('message', this.emit.bind(this, 'message', source));
+        source.on('close', this.emit.bind(this, 'client closed', source));
+        // Higher layers don't currently need any insight.  If a source
+        // has an error, just close it.
+        source.on('error', function handleError() {
+            source.close();
+        });
+        // allow chaining
+        return this;
+    };
+    // [ -Public API- ]
+    // listen for remote websocket connections
+    TransportServer.prototype.listen = function websocketListen(options, cb) {
+        log.info("websocket server listen");
+        // only allow this to be called once on the object
+        if (this._ws) {
+            // throw immediately - this is programmer error
+            throw new VError("'listen' has already been called on this transport object.");
+        }
+        // add cb to listeners
+        if (cb) {
+            this.on('listening', cb);
+        }
+        // set up websocket server
+        this._ws = new ws.Server(options);
+        // proxy some events
+        // FIXME - be intentional about what errors are passed up
+        // at each stage
+        this._ws.on('listening', this.emit.bind(this, 'listening'));
+        this._ws.on('error', this.emit.bind(this, 'error'));
+        this._ws._server.on('close', this.emit.bind(this, 'close'));
+        // handle connections from clients
+        this._ws.on('connection', this._handleConnection.bind(this));
+        // it doesn't make sense to do anything with the object until listen
+        // calls back, so return null
+        return null;
+    };
+    // close connection(s)
+    TransportServer.prototype.close = function websocketClose() {
+        log.info("websocket close");
+        if (this._closed) {
+            throw new VError("Transport Server has already been closed");
+        }
+        this._ws.close();
+        // it doesn't make sense to do anything with the object
+        // after close, so return null
+        return null;
+    };
+    return TransportServer;
+}
+var ActualTransportServer = createTransportServerType();
+
+
+// [ Transport Client ]
+// create websocket type
+function createTransportClientType() {
+    log.info("create websocket");
+    // [ -Events- ]
+    // open - when the transport is open
+    // close - when transport is closed
+    // message - when transport receives a JSON message
+    // [ -Constructor- ]
+    function TransportClient() {
+        log.info("instantiate websocket");
+        // get non-ambiguous this
+        var self = this;
+        // Call parent constructor
+        TransportClient.super_.call(self);
+        // Internal structures
+        self._ws = undefined;
+        self._id = _.uniqueId(); // debugging tool only
+        self._state = "NOT_OPENED";
+        // state listeners
+        self.once("open", function handleOpened() {
+            self._state = "OPEN";
+        }).once("close", function handleClosed() {
+            self._state = "CLOSED";
+        });
+        // constructor - return undefined
+        return undefined;
+    }
+    // [ -Inheritance- ]
+    util.inherits(TransportClient, events.EventEmitter);
+    // [ -Private API- ]
+    // handle a received message
+    // emits 'message' with a JSON argument
+    TransportClient.prototype._handleMessage = function transportClientHandleMessage(message, flags) {
+        log.info("websocket on message");
+        // binay messages are not supported
+        if (flags.binary) {
+            var error = new VError("Got binary message from remote hub (not supported).");
+            error.hubMessage = message;
+            // emit error because this occurred asynchronously, and not necessarily due to user or local
+            // programmer error
+            this.emit('error', error);
         } else {
-            profile.ws_client.app_send(message, callback);
+            // try to structure the message
+            var structured;
+            try {
+                structured = JSON.parse(message);
+            } catch (e) {
+                var error = new VError(e, "cannot parse message from remote hub as JSON");
+                error.hubMessage = message;
+                // emit error because this occurred asynchronously, and not necessarily due to user or local
+                // programmer error
+                this.emit('error', error);
+                // need to return here, because js has no try/catch/else,
+                // and we don't want to continue after this error.
+                return null;
+            }
+            // else - a non-binary well-formatted JSON message
+            this.emit("message", structured);
         }
+        // allow chaining
+        return this;
     };
-    self.close = function close() {
-        debugtrace();
-        publisher.close();
-        publisher.terminate();
-        for (var i=0; i < client_profiles.list.length; i++) {
-            var profile = client_profiles.list[i];
-            profile.ws_client.close();
-            profile.ws_client.terminate();
+    // proxy events from the websocket
+    TransportClient.prototype._proxyEvents = function transportClientProxyEvents() {
+        this._ws.on('open', this.emit.bind(this, 'open'));
+        this._ws.on('close', this.emit.bind(this, 'close'));
+        this._ws.on('error', this.emit.bind(this, 'error'));
+        // handle messages from remote hub
+        this._ws.on("message", this._handleMessage.bind(this));
+        // allow chaining
+        return this;
+    };
+    // [ -Public API- ]
+    // connect to a remote websocket hub
+    // callback is called when the client is connected to the hub
+    TransportClient.prototype.connect = function transportClientConnect(url, cb) {
+        log.info("websocket client connect");
+        // only allow this to be called once on the object
+        if (this._ws) {
+            // throw immediately - this is programmer error
+            throw new VError("'connect' has already been called on this transport object.");
         }
+        // add cb to listeners
+        if (cb) {
+            this.on('open', cb);
+        }
+        // open a websocket connection
+        this._ws = new ws(url);
+        // proxy some events
+        this._proxyEvents();
+        // it doesn't make sense to do anything with the object until connect
+        // calls back, so return null
+        return null;
     };
+    // wrap a websocket conn in a Transport Client
+    TransportClient.prototype.wrap = function transportClientWrap(websocketConnection) {
+        log.info("websocket client wrap");
+        var wsc = websocketConnection;
+        // only allow this to be called once on the object
+        if (this._ws) {
+            // throw immediately - this is programmer error
+            throw new VError("'connect' has already been called on this transport object.");
+        }
+        // theoretically the connection is already open
+        this._ws = wsc;
+        if (this._ws.readyState === ws.OPEN) {
+            this._state = "OPEN";
+        } else {
+            var error = new VError("must only wrap websockets which are OPEN");
+            error.state = ws.readyState;
+            throw error;
+        }
+        // proxy some events
+        this._proxyEvents();
+        // allow chaining
+        return this;
+    };
+    // close connection
+    TransportClient.prototype.close = function transportClientClose() {
+        log.info("websocket close");
+        if (this._state !== "OPEN") {
+            throw new VError("Cannot close a client which is not open");
+        }
+        this._ws.close();
+        // it doesn't make sense to do anything with the object
+        // after close, so return null
+        return null;
+    };
+    // send to remote websocket
+    TransportClient.prototype.send = function transportClientSend(message, cb) {
+        log.info("websocket send", message);
+        if (this._state !== "OPEN") {
+            throw new VError("Nonsensical to call before 'open' or after 'close' events");
+        }
+        var stringified;
+        try {
+            stringified = JSON.stringify(message);
+        } catch (e) {
+            // do not use the cb to emit - this is a programmer error - throw immediately
+            var error = new VError(e, "could not stringify JSON message");
+            error.jsonMessage = message;
+            throw error;
+        }
+        log.debug("stringified: ", stringified);
+        // explicitly check state, because the ws module has bad
+        // internal behavior if the socket is closing when you try
+        // to send a message. see https://github.com/websockets/ws/issues/366
+        if (this._ws.readyState === ws.OPEN) {
+            this._ws.send(stringified, cb);
+        } else {
+            // throw - this is a programming error (sending while ws in bad state)
+            throw new VError("The client connection is not open.  Cannot send.");
+        }
+        // allow chaining
+        return this;
+    };
+    return TransportClient;
 }
-// complete the inheritance
-util.inherits(WebProxy, events.EventEmitter);
-// define an explicit creator function
-function create_web_proxy(host, port) {
-    debugtrace();
-    return new WebProxy(host, port);
-}
+var ActualTransportClient = createTransportClientType();
 
 
 // [ Exports ]
-exports.create_service = create_service;
-exports.create_client = create_client;
-exports.create_web_server = create_web_server;
-exports.create_web_proxy = create_web_proxy;
+exports.createHub = function createHub() { return new ActualHub(); };
+exports.createClient = function createClient() { return new ActualClient(); };

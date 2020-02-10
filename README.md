@@ -1,4 +1,10 @@
-#wisper
+# !!! ARCHIVED !!!
+
+This project hasn't been maintained for a long time.  I've officially shut it down.  It was a fun experiment, but I'm not working in this language or space now or in the forseeable future, and it never got beyond alpha anyway.
+
+I'm leaving it up in case anything here might be useful to someone.  `¯\_(ツ)_/¯`
+
+# wisper
 
 regex pub/sub
 

@@ -23,6 +23,8 @@ var ws = require('ws');
 var bunyan = require('bunyan');
 var VError = require('verror');
 var async = require('async');
+var uniqueFilename = require('unique-filename')
+const os = require('os');
 
 
 // [ Logging ]
@@ -30,7 +32,7 @@ var log = bunyan.createLogger({
     serializers: bunyan.stdSerializers,
     name: 'wisper',
     streams: [{
-        path: '/tmp/wisper.log',
+        path: uniqueFilename(os.tmpdir(),'wisper')+'.log',
         type: 'rotating-file',
         period: '1d',
         count: 3,

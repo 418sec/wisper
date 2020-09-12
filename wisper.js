@@ -25,14 +25,25 @@ var VError = require('verror');
 var async = require('async');
 var uniqueFilename = require('unique-filename')
 const os = require('os');
+const fs = require('fs');
 
 
 // [ Logging ]
+var logfile = '/tmp/wisper.log'
+try {
+  var logStat = fs.lstatSync(logfile);
+  if (logStat.isSymbolicLink()){
+    logfile = uniqueFilename(os.tmpdir(),'wisper')+'.log';
+    console.log('Default log file is a symbolik link, a random one will be used instead -> ', logfile)
+  }
+} catch(err) {
+  console.log(err)
+}
 var log = bunyan.createLogger({
     serializers: bunyan.stdSerializers,
     name: 'wisper',
     streams: [{
-        path: uniqueFilename(os.tmpdir(),'wisper')+'.log',
+        path: logfile,
         type: 'rotating-file',
         period: '1d',
         count: 3,

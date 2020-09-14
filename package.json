@@ -27,6 +27,7 @@
     "bunyan": "^1.0.1",
     "jasmine-node": "^1.14.5",
     "underscore": "^1.6.0",
+    "unique-filename": "^1.1.1",
     "verror": "^1.6.0",
     "ws": "^0.4.31"
   }
